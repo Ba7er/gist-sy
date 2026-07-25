@@ -96,6 +96,50 @@ Full-text search (`search_vector` tsvector column, Postgres `'arabic'` text-sear
 - Primary sort field: **`scraped_at`** (not `published_at`, which is frequently null/unparseable). `published_at` is stored for display and for date-range filtering via `COALESCE(published_at, scraped_at)`.
 - Pagination: **infinite scroll**, implemented via **keyset/cursor pagination** — `WHERE (scraped_at, id) < (cursor.scraped_at, cursor.id) ORDER BY scraped_at DESC, id DESC LIMIT N` — avoids OFFSET-based paging issues while new rows are actively being inserted by the scraper.
 
+## Backend Application Layer (Node/Express/TypeScript)
+
+- **ORM**: **Prisma**. `prisma/schema.prisma` (in the `backend` repo) is the single source of truth for the DB schema and owns all migrations (`prisma migrate`). DB columns are `snake_case` (e.g. `published_at`), mapped to `camelCase` in TS code via Prisma's `@map`/`@@map`.
+- **Cross-repo schema sync**: the Python scraper writes to the same Postgres tables via a plain client (not Prisma), so it doesn't get schema changes automatically. Process rule: any migration touching shared tables (`articles`, `sources`, `categories`, `relevance_keywords`, `scrape_runs`) is treated as a two-repo change — check `schema.prisma` before writing/updating scraper SQL, and deploy the migration (`prisma migrate deploy`) together with the corresponding scraper update in the same maintenance window, not independently. No automated sync tooling for v1 — this is a discipline rule given the project's scale (single maintainer, no CI/CD yet).
+- **Validation**: **Zod** validates all `GET /api/articles` query params (`source_id`, `category_id`, `date_from`/`date_to`, `q`, `sort`, `cursor`, `limit`) at the route boundary; invalid input short-circuits to the `400` response before touching Prisma.
+- **Project structure**: structured **by business component** (domain-oriented), not by technical layer — each component owns its route, controller, service, and Zod schema, per [Node.js best-practices §1.1](https://github.com/goldbergyoni/nodebestpractices?tab=readme-ov-file#-11-structure-your-solution-by-business-components):
+
+```
+backend/
+├── prisma/
+│   ├── schema.prisma
+│   └── migrations/
+├── src/
+│   ├── components/
+│   │   ├── articles/
+│   │   │   ├── articles.routes.ts       # Express router, mounts controller
+│   │   │   ├── articles.controller.ts   # thin: parse req → call service → send res
+│   │   │   ├── articles.service.ts      # Prisma queries: filtering, cursor pagination, sorting
+│   │   │   └── articles.schema.ts       # Zod schemas for query params
+│   │   ├── sources/
+│   │   │   ├── sources.routes.ts
+│   │   │   ├── sources.controller.ts
+│   │   │   └── sources.service.ts
+│   │   ├── categories/
+│   │   │   ├── categories.routes.ts
+│   │   │   ├── categories.controller.ts
+│   │   │   └── categories.service.ts
+│   │   └── health/
+│   │       └── health.routes.ts
+│   ├── shared/
+│   │   ├── prisma-client.ts             # single PrismaClient instance
+│   │   ├── error-handler.ts             # consistent {error} shape, 400 vs 500
+│   │   └── cursor.ts                    # encode/decode the base64 keyset pagination cursor
+│   ├── app.ts                           # express app, mounts each component's router
+│   └── server.ts                        # entrypoint
+├── Dockerfile
+├── package.json / tsconfig.json
+└── .env.example
+```
+
+This scales naturally: later admin-page work adds new components (`admin-sources/`, `admin-keywords/`, `admin-review/`) alongside the existing ones rather than restructuring anything.
+
+`shared/cursor.ts` implements the keyset pagination helper: `encodeCursor(scrapedAt, id)` base64-encodes `{scrapedAt, id}` into the opaque `next_cursor` string returned to the client; `decodeCursor(cursor)` reverses it back into `{scrapedAt, id}` for building the `WHERE (scraped_at, id) < (...)` query. A malformed/tampered cursor throws, which the route layer turns into the `400` response.
+
 ## API Contract (Express backend)
 
 **`GET /api/articles`**
@@ -156,3 +200,6 @@ Invalid params → `400 { "error": "..." }`. Unexpected failures → generic `50
 - **Full-text search** — `search_vector` (Postgres `'arabic'` config) planned, not yet implemented.
 - **DB access hardening** — split single shared role into least-privilege scraper/backend roles, post-v1.
 - **CI/CD** — none in v1 (manual git pull + compose rebuild); revisit if needed.
+- **Environment/secrets management** — approach not yet decided (likely `.env` per repo + `.env.example`, kept out of git).
+- **Logging & error handling strategy** — structured logging approach for backend (e.g. `pino`) and scraper (Python `logging`), consistent error response shape, log destination on the VPS.
+- **Dockerfile details** — one `Dockerfile` per repo (backend, scraper), base images, multi-stage build for the TS backend.
