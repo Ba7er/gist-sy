@@ -175,11 +175,54 @@ Response `200`:
 ```
 Invalid params → `400 { "error": "..." }`. Unexpected failures → generic `500`, details logged server-side only.
 
-**`GET /api/sources`** → `[{ id, name }]`, active sources only.
+**`GET /api/sources`**
 
-**`GET /api/categories`** → `[{ id, name }]`, ordered by `sort_order`.
+No query params — returns all active (`is_active = true`) sources, for populating the source filter dropdown.
 
-**`GET /health`** → `{ "status": "ok" }` (200) or 503 if DB unreachable — for container orchestration.
+Response `200`:
+```json
+[
+  { "id": 1, "name": "SANA" },
+  { "id": 2, "name": "Enab Baladi" },
+  { "id": 3, "name": "Syrian Observatory for Human Rights" }
+]
+```
+No pagination needed — the source list is small and fixed (v1 has 5). Unexpected failure → generic `500`, details logged server-side only.
+
+**`GET /api/categories`**
+
+No query params — returns the full fixed category taxonomy, ordered by `sort_order` ascending, for populating the category filter dropdown.
+
+Response `200`:
+```json
+[
+  { "id": 1, "name": "سياسة" },
+  { "id": 2, "name": "عسكري" },
+  { "id": 3, "name": "اقتصاد" },
+  { "id": 4, "name": "إنساني" },
+  { "id": 5, "name": "مجتمع" },
+  { "id": 6, "name": "أخرى" }
+]
+```
+Unexpected failure → generic `500`, details logged server-side only.
+
+**`GET /health`**
+
+No query params — used by container orchestration (and manual checks) to confirm the service and its DB connection are up.
+
+Response `200`:
+```json
+{ "status": "ok" }
+```
+Response `503` (DB unreachable):
+```json
+{ "status": "error", "error": "database unreachable" }
+```
+
+### Cross-cutting concerns
+- **CORS**: since the frontend is a separate codebase/origin, the backend enables CORS scoped to the frontend's origin (its dev URL locally, its actual domain in prod) — not a wildcard `*`.
+- **Content type**: every response is `application/json`, including error bodies.
+- **Auth**: none in v1 — all four endpoints are public/read-only. Auth only becomes relevant for the future admin-page endpoints (Phase 2, out of scope here).
 
 ## Scraper Architecture (Python)
 
